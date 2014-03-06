@@ -1,0 +1,15 @@
+--- drivers/net/wireless/rtlwifi/rtl8192cu/rf.c
++++ drivers/net/wireless/rtlwifi/rtl8192cu/rf.c
+@@ -102,10 +100,10 @@
+ 			tx_agc[RF90_PATH_A] = 0x10101010;
+ 			tx_agc[RF90_PATH_B] = 0x10101010;
+ 		} else if (rtlpriv->dm.dynamic_txhighpower_lvl ==
+-			   TXHIGHPWRLEVEL_LEVEL1) {
++			   TXHIGHPWRLEVEL_LEVEL2) {
+ 			tx_agc[RF90_PATH_A] = 0x00000000;
+ 			tx_agc[RF90_PATH_B] = 0x00000000;
+-		} else{
++		} else {
+ 			for (idx1 = RF90_PATH_A; idx1 <= RF90_PATH_B; idx1++) {
+ 				tx_agc[idx1] = ppowerlevel[idx1] |
+ 				    (ppowerlevel[idx1] << 8) |
