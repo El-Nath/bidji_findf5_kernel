@@ -1,0 +1,11 @@
+--- sound/core/pcm_lib.c
++++ sound/core/pcm_lib.c
+@@ -1847,6 +1847,8 @@
+ 		case SNDRV_PCM_STATE_DISCONNECTED:
+ 			err = -EBADFD;
+ 			goto _endloop;
++		case SNDRV_PCM_STATE_PAUSED:
++			continue;
+ 		}
+ 		if (!tout) {
+ 			snd_printd("%s write error (DMA or IRQ trouble?)\n",

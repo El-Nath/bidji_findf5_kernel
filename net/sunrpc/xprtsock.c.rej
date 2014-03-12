@@ -1,0 +1,29 @@
+--- net/sunrpc/xprtsock.c
++++ net/sunrpc/xprtsock.c
+@@ -496,7 +491,6 @@
+ 	struct rpc_rqst *req = task->tk_rqstp;
+ 	struct rpc_xprt *xprt = req->rq_xprt;
+ 	struct sock_xprt *transport = container_of(xprt, struct sock_xprt, xprt);
+-	struct sock *sk = transport->inet;
+ 	int ret = -EAGAIN;
+ 
+ 	dprintk("RPC: %5u xmit incomplete (%u left of %u)\n",
+@@ -514,7 +508,7 @@
+ 			 * window size
+ 			 */
+ 			set_bit(SOCK_NOSPACE, &transport->sock->flags);
+-			sk->sk_write_pending++;
++			transport->inet->sk_write_pending++;
+ 			/* ...and wait for more buffer space */
+ 			xprt_wait_for_buffer_space(task, xs_nospace_callback);
+ 		}
+@@ -524,9 +518,6 @@
+ 	}
+ 
+ 	spin_unlock_bh(&xprt->transport_lock);
+-
+-	/* Race breaker in case memory is freed before above code is called */
+-	sk->sk_write_space(sk);
+ 	return ret;
+ }
+ 

@@ -18,21 +18,12 @@
  }
  EXPORT_SYMBOL_GPL(dpm_suspend_end);
  
-@@ -1021,7 +1029,7 @@
- 	dpm_wait_for_children(dev, async);
- 
- 	if (async_error)
--		return 0;
-+		goto Complete;
- 
- 	pm_runtime_get_noresume(dev);
- 	if (pm_runtime_barrier(dev) && device_may_wakeup(dev))
-@@ -1030,7 +1038,7 @@
- 	if (pm_wakeup_pending()) {
- 		pm_runtime_put_sync(dev);
- 		async_error = -EBUSY;
--		return 0;
-+		goto Complete;
+@@ -1087,6 +1095,8 @@
  	}
  
- 	device_lock(dev);
+ 	device_unlock(dev);
++
++ Complete:
+ 	complete_all(&dev->power.completion);
+ 
+ 	if (error) {

@@ -16,7 +16,7 @@
  		     atomic_read(get_gcwq_nr_running(gcwq->cpu)));
  }
  
-@@ -1736,10 +1761,9 @@
+@@ -1743,10 +1775,9 @@
  		*nextp = n;
  }
  

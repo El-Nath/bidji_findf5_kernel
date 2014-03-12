@@ -1,0 +1,11 @@
+--- net/batman-adv/bat_iv_ogm.c
++++ net/batman-adv/bat_iv_ogm.c
+@@ -72,7 +72,7 @@
+ {
+ 	return jiffies + msecs_to_jiffies(
+ 		   atomic_read(&bat_priv->orig_interval) -
+-		   JITTER + (random32() % 2*JITTER));
++		   JITTER + (random32() % (2*JITTER)));
+ }
+ 
+ /* when do we schedule a ogm packet to be sent */

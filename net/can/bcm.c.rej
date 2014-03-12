@@ -1,0 +1,12 @@
+--- net/can/bcm.c
++++ net/can/bcm.c
+@@ -1084,6 +1084,9 @@
+ 		op->sk = sk;
+ 		op->ifindex = ifindex;
+ 
++		/* ifindex for timeout events w/o previous frame reception */
++		op->rx_ifindex = ifindex;
++
+ 		/* initialize uninitialized (kzalloc) structure */
+ 		hrtimer_init(&op->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+ 		op->timer.function = bcm_rx_timeout_handler;

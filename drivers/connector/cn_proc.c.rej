@@ -1,0 +1,24 @@
+--- drivers/connector/cn_proc.c
++++ drivers/connector/cn_proc.c
+@@ -303,12 +275,6 @@
+ 	if (msg->len != sizeof(*mc_op))
+ 		return;
+ 
+-	/* Can only change if privileged. */
+-	if (!capable(CAP_NET_ADMIN)) {
+-		err = EPERM;
+-		goto out;
+-	}
+-
+ 	mc_op = (enum proc_cn_mcast_op*)msg->data;
+ 	switch (*mc_op) {
+ 	case PROC_CN_MCAST_LISTEN:
+@@ -321,8 +287,6 @@
+ 		err = EINVAL;
+ 		break;
+ 	}
+-
+-out:
+ 	cn_proc_ack(err, msg->seq, msg->ack);
+ }
+ 

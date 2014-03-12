@@ -1,0 +1,86 @@
+--- fs/ext4/extents.c
++++ fs/ext4/extents.c
+@@ -650,7 +630,6 @@
+ 	struct ext4_extent_header *eh;
+ 	struct buffer_head *bh;
+ 	short int depth, i, ppos = 0, alloc = 0;
+-	int ret;
+ 
+ 	eh = ext_inode_hdr(inode);
+ 	depth = ext_depth(inode);
+@@ -680,15 +659,12 @@
+ 		path[ppos].p_ext = NULL;
+ 
+ 		bh = sb_getblk(inode->i_sb, path[ppos].p_block);
+-		if (unlikely(!bh)) {
+-			ret = -ENOMEM;
++		if (unlikely(!bh))
+ 			goto err;
+-		}
+ 		if (!bh_uptodate_or_lock(bh)) {
+ 			trace_ext4_ext_load_extent(inode, block,
+ 						path[ppos].p_block);
+-			ret = bh_submit_read(bh);
+-			if (ret < 0) {
++			if (bh_submit_read(bh) < 0) {
+ 				put_bh(bh);
+ 				goto err;
+ 			}
+@@ -701,15 +677,13 @@
+ 			put_bh(bh);
+ 			EXT4_ERROR_INODE(inode,
+ 					 "ppos %d > depth %d", ppos, depth);
+-			ret = -EIO;
+ 			goto err;
+ 		}
+ 		path[ppos].p_bh = bh;
+ 		path[ppos].p_hdr = eh;
+ 		i--;
+ 
+-		ret = need_to_validate ? ext4_ext_check(inode, eh, i) : 0;
+-		if (ret < 0)
++		if (need_to_validate && ext4_ext_check(inode, eh, i))
+ 			goto err;
+ 	}
+ 
+@@ -731,7 +705,7 @@
+ 	ext4_ext_drop_refs(path);
+ 	if (alloc)
+ 		kfree(path);
+-	return ERR_PTR(ret);
++	return ERR_PTR(-EIO);
+ }
+ 
+ /*
+@@ -886,7 +860,7 @@
+ 	}
+ 	bh = sb_getblk(inode->i_sb, newblock);
+ 	if (!bh) {
+-		err = -ENOMEM;
++		err = -EIO;
+ 		goto cleanup;
+ 	}
+ 	lock_buffer(bh);
+@@ -958,7 +932,7 @@
+ 		newblock = ablocks[--a];
+ 		bh = sb_getblk(inode->i_sb, newblock);
+ 		if (!bh) {
+-			err = -ENOMEM;
++			err = -EIO;
+ 			goto cleanup;
+ 		}
+ 		lock_buffer(bh);
+@@ -1069,8 +1043,11 @@
+ 		return err;
+ 
+ 	bh = sb_getblk(inode->i_sb, newblock);
+-	if (!bh)
+-		return -ENOMEM;
++	if (!bh) {
++		err = -EIO;
++		ext4_std_error(inode->i_sb, err);
++		return err;
++	}
+ 	lock_buffer(bh);
+ 
+ 	err = ext4_journal_get_create_access(handle, bh);

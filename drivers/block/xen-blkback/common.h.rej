@@ -1,0 +1,11 @@
+--- drivers/block/xen-blkback/common.h
++++ drivers/block/xen-blkback/common.h
+@@ -201,8 +186,6 @@
+ 	int			st_wr_sect;
+ 
+ 	wait_queue_head_t	waiting_to_free;
+-	/* Thread shutdown wait queue. */
+-	wait_queue_head_t	shutdown_wq;
+ };
+ 
+ 

@@ -1,0 +1,11 @@
+--- net/bluetooth/rfcomm/tty.c
++++ net/bluetooth/rfcomm/tty.c
+@@ -467,7 +467,7 @@
+ 
+ 	size = sizeof(*dl) + dev_num * sizeof(*di);
+ 
+-	dl = kmalloc(size, GFP_KERNEL);
++	dl = kzalloc(size, GFP_KERNEL);
+ 	if (!dl)
+ 		return -ENOMEM;
+ 

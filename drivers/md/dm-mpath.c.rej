@@ -1,0 +1,16 @@
+--- drivers/md/dm-mpath.c
++++ drivers/md/dm-mpath.c
+@@ -1543,11 +1545,8 @@
+ 	/*
+ 	 * Only pass ioctls through if the device sizes match exactly.
+ 	 */
+-	if (!bdev || ti->len != i_size_read(bdev->bd_inode) >> SECTOR_SHIFT) {
+-		int err = scsi_verify_blk_ioctl(NULL, cmd);
+-		if (err)
+-			r = err;
+-	}
++	if (!r && ti->len != i_size_read(bdev->bd_inode) >> SECTOR_SHIFT)
++		r = scsi_verify_blk_ioctl(NULL, cmd);
+ 
+ 	return r ? : __blkdev_driver_ioctl(bdev, mode, cmd, arg);
+ }

@@ -35,12 +35,3 @@
  			vaddr = kmap_high_get(page);
  			if (vaddr) {
  				vaddr += offset;
-@@ -538,7 +540,7 @@
- 			op(vaddr, len, dir);
- 		}
- 		offset = 0;
--		page++;
-+		pfn++;
- 		left -= len;
- 	} while (left);
- }

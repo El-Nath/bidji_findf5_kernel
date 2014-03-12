@@ -1,0 +1,23 @@
+--- net/nfc/rawsock.c
++++ net/nfc/rawsock.c
+@@ -54,7 +54,10 @@
+ {
+ 	struct sock *sk = sock->sk;
+ 
+-	pr_debug("sock=%p\n", sock);
++	pr_debug("sock=%p sk=%p\n", sock, sk);
++
++	if (!sk)
++		return 0;
+ 
+ 	sock_orphan(sk);
+ 	sock_put(sk);
+@@ -232,8 +235,6 @@
+ 	if (!skb)
+ 		return rc;
+ 
+-	msg->msg_namelen = 0;
+-
+ 	copied = skb->len;
+ 	if (len < copied) {
+ 		msg->msg_flags |= MSG_TRUNC;

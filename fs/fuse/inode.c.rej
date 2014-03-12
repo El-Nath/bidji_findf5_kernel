@@ -1,0 +1,11 @@
+--- fs/fuse/inode.c
++++ fs/fuse/inode.c
+@@ -91,6 +91,8 @@
+ 	fi->nlookup = 0;
+ 	fi->attr_version = 0;
+ 	fi->writectr = 0;
++	fi->orig_ino = 0;
++	fi->state = 0;
+ 	INIT_LIST_HEAD(&fi->write_files);
+ 	INIT_LIST_HEAD(&fi->queued_writes);
+ 	INIT_LIST_HEAD(&fi->writepages);

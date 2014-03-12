@@ -1,0 +1,414 @@
+--- drivers/net/xen-netback/netback.c
++++ drivers/net/xen-netback/netback.c
+@@ -891,49 +922,100 @@
+ 	xenvif_put(vif);
+ }
+ 
++static void netbk_fatal_tx_err(struct xenvif *vif)
++{
++	netdev_err(vif->dev, "fatal error; disabling device\n");
++	xenvif_carrier_off(vif);
++	xenvif_put(vif);
++}
++
+ static int netbk_count_requests(struct xenvif *vif,
+ 				struct xen_netif_tx_request *first,
++				RING_IDX first_idx,
+ 				struct xen_netif_tx_request *txp,
+ 				int work_to_do)
+ {
+ 	RING_IDX cons = vif->tx.req_cons;
+-	int frags = 0;
++	int slots = 0;
++	int drop_err = 0;
+ 
+ 	if (!(first->flags & XEN_NETTXF_more_data))
+ 		return 0;
+ 
+ 	do {
+-		if (frags >= work_to_do) {
+-			netdev_dbg(vif->dev, "Need more frags\n");
+-			return -frags;
++		if (slots >= work_to_do) {
++			netdev_err(vif->dev,
++				   "Asked for %d slots but exceeds this limit\n",
++				   work_to_do);
++			netbk_fatal_tx_err(vif);
++			return -ENODATA;
+ 		}
+ 
+-		if (unlikely(frags >= MAX_SKB_FRAGS)) {
+-			netdev_dbg(vif->dev, "Too many frags\n");
+-			return -frags;
++		/* This guest is really using too many slots and
++		 * considered malicious.
++		 */
++		if (unlikely(slots >= max_skb_slots)) {
++			netdev_err(vif->dev,
++				   "Malicious frontend using %d slots, threshold %u\n",
++				   slots, max_skb_slots);
++			netbk_fatal_tx_err(vif);
++			return -E2BIG;
++		}
++
++		/* Xen network protocol had implicit dependency on
++		 * MAX_SKB_FRAGS. XEN_NETIF_NR_SLOTS_MIN is set to the
++		 * historical MAX_SKB_FRAGS value 18 to honor the same
++		 * behavior as before. Any packet using more than 18
++		 * slots but less than max_skb_slots slots is dropped
++		 */
++		if (!drop_err && slots >= XEN_NETIF_NR_SLOTS_MIN) {
++			if (net_ratelimit())
++				netdev_dbg(vif->dev,
++					   "Too many slots (%d) exceeding limit (%d), dropping packet\n",
++					   slots, XEN_NETIF_NR_SLOTS_MIN);
++			drop_err = -E2BIG;
+ 		}
+ 
+-		memcpy(txp, RING_GET_REQUEST(&vif->tx, cons + frags),
++		memcpy(txp, RING_GET_REQUEST(&vif->tx, cons + slots),
+ 		       sizeof(*txp));
+-		if (txp->size > first->size) {
+-			netdev_dbg(vif->dev, "Frags galore\n");
+-			return -frags;
++
++		/* If the guest submitted a frame >= 64 KiB then
++		 * first->size overflowed and following slots will
++		 * appear to be larger than the frame.
++		 *
++		 * This cannot be fatal error as there are buggy
++		 * frontends that do this.
++		 *
++		 * Consume all slots and drop the packet.
++		 */
++		if (!drop_err && txp->size > first->size) {
++			if (net_ratelimit())
++				netdev_dbg(vif->dev,
++					   "Invalid tx request, slot size %u > remaining size %u\n",
++					   txp->size, first->size);
++			drop_err = -EIO;
+ 		}
+ 
+ 		first->size -= txp->size;
+-		frags++;
++		slots++;
+ 
+ 		if (unlikely((txp->offset + txp->size) > PAGE_SIZE)) {
+-			netdev_dbg(vif->dev, "txp->offset: %x, size: %u\n",
++			netdev_err(vif->dev, "Cross page boundary, txp->offset: %x, size: %u\n",
+ 				 txp->offset, txp->size);
+-			return -frags;
++			netbk_fatal_tx_err(vif);
++			return -EINVAL;
+ 		}
+ 	} while ((txp++)->flags & XEN_NETTXF_more_data);
+-	return frags;
++
++	if (drop_err) {
++		netbk_tx_err(vif, first, first_idx + slots);
++		return drop_err;
++	}
++
++	return slots;
+ }
+ 
+ static struct page *xen_netbk_alloc_page(struct xen_netbk *netbk,
+-					 struct sk_buff *skb,
+ 					 u16 pending_idx)
+ {
+ 	struct page *page;
+@@ -954,43 +1036,120 @@
+ 	struct skb_shared_info *shinfo = skb_shinfo(skb);
+ 	skb_frag_t *frags = shinfo->frags;
+ 	u16 pending_idx = *((u16 *)skb->data);
+-	int i, start;
++	u16 head_idx = 0;
++	int slot, start;
++	struct page *page;
++	pending_ring_idx_t index, start_idx = 0;
++	uint16_t dst_offset;
++	unsigned int nr_slots;
++	struct pending_tx_info *first = NULL;
++
++	/* At this point shinfo->nr_frags is in fact the number of
++	 * slots, which can be as large as XEN_NETIF_NR_SLOTS_MIN.
++	 */
++	nr_slots = shinfo->nr_frags;
+ 
+ 	/* Skip first skb fragment if it is on same page as header fragment. */
+ 	start = (frag_get_pending_idx(&shinfo->frags[0]) == pending_idx);
+ 
+-	for (i = start; i < shinfo->nr_frags; i++, txp++) {
+-		struct page *page;
+-		pending_ring_idx_t index;
++	/* Coalesce tx requests, at this point the packet passed in
++	 * should be <= 64K. Any packets larger than 64K have been
++	 * handled in netbk_count_requests().
++	 */
++	for (shinfo->nr_frags = slot = start; slot < nr_slots;
++	     shinfo->nr_frags++) {
+ 		struct pending_tx_info *pending_tx_info =
+ 			netbk->pending_tx_info;
+ 
+-		index = pending_index(netbk->pending_cons++);
+-		pending_idx = netbk->pending_ring[index];
+-		page = xen_netbk_alloc_page(netbk, skb, pending_idx);
++		page = alloc_page(GFP_KERNEL|__GFP_COLD);
+ 		if (!page)
+-			return NULL;
+-
+-		gop->source.u.ref = txp->gref;
+-		gop->source.domid = vif->domid;
+-		gop->source.offset = txp->offset;
++			goto err;
++
++		dst_offset = 0;
++		first = NULL;
++		while (dst_offset < PAGE_SIZE && slot < nr_slots) {
++			gop->flags = GNTCOPY_source_gref;
++
++			gop->source.u.ref = txp->gref;
++			gop->source.domid = vif->domid;
++			gop->source.offset = txp->offset;
++
++			gop->dest.domid = DOMID_SELF;
++
++			gop->dest.offset = dst_offset;
++			gop->dest.u.gmfn = virt_to_mfn(page_address(page));
++
++			if (dst_offset + txp->size > PAGE_SIZE) {
++				/* This page can only merge a portion
++				 * of tx request. Do not increment any
++				 * pointer / counter here. The txp
++				 * will be dealt with in future
++				 * rounds, eventually hitting the
++				 * `else` branch.
++				 */
++				gop->len = PAGE_SIZE - dst_offset;
++				txp->offset += gop->len;
++				txp->size -= gop->len;
++				dst_offset += gop->len; /* quit loop */
++			} else {
++				/* This tx request can be merged in the page */
++				gop->len = txp->size;
++				dst_offset += gop->len;
++
++				index = pending_index(netbk->pending_cons++);
++
++				pending_idx = netbk->pending_ring[index];
++
++				memcpy(&pending_tx_info[pending_idx].req, txp,
++				       sizeof(*txp));
++				xenvif_get(vif);
++
++				pending_tx_info[pending_idx].vif = vif;
++
++				/* Poison these fields, corresponding
++				 * fields for head tx req will be set
++				 * to correct values after the loop.
++				 */
++				netbk->mmap_pages[pending_idx] = (void *)(~0UL);
++				pending_tx_info[pending_idx].head =
++					INVALID_PENDING_RING_IDX;
++
++				if (!first) {
++					first = &pending_tx_info[pending_idx];
++					start_idx = index;
++					head_idx = pending_idx;
++				}
++
++				txp++;
++				slot++;
++			}
+ 
+-		gop->dest.u.gmfn = virt_to_mfn(page_address(page));
+-		gop->dest.domid = DOMID_SELF;
+-		gop->dest.offset = txp->offset;
++			gop++;
++		}
+ 
+-		gop->len = txp->size;
+-		gop->flags = GNTCOPY_source_gref;
++		first->req.offset = 0;
++		first->req.size = dst_offset;
++		first->head = start_idx;
++		set_page_ext(page, netbk, head_idx);
++		netbk->mmap_pages[head_idx] = page;
++		frag_set_pending_idx(&frags[shinfo->nr_frags], head_idx);
++	}
+ 
+-		gop++;
++	BUG_ON(shinfo->nr_frags > MAX_SKB_FRAGS);
+ 
+-		memcpy(&pending_tx_info[pending_idx].req, txp, sizeof(*txp));
+-		xenvif_get(vif);
+-		pending_tx_info[pending_idx].vif = vif;
+-		frag_set_pending_idx(&frags[i], pending_idx);
++	return gop;
++err:
++	/* Unwind, freeing all pages and sending error responses. */
++	while (shinfo->nr_frags-- > start) {
++		xen_netbk_idx_release(netbk,
++				frag_get_pending_idx(&frags[shinfo->nr_frags]),
++				XEN_NETIF_RSP_ERROR);
+ 	}
++	/* The head too, if necessary. */
++	if (start)
++		xen_netbk_idx_release(netbk, pending_idx, XEN_NETIF_RSP_ERROR);
+ 
+-	return gop;
++	return NULL;
+ }
+ 
+ static int xen_netbk_tx_check_gop(struct xen_netbk *netbk,
+@@ -999,48 +1158,45 @@
+ {
+ 	struct gnttab_copy *gop = *gopp;
+ 	u16 pending_idx = *((u16 *)skb->data);
+-	struct pending_tx_info *pending_tx_info = netbk->pending_tx_info;
+-	struct xenvif *vif = pending_tx_info[pending_idx].vif;
+-	struct xen_netif_tx_request *txp;
+ 	struct skb_shared_info *shinfo = skb_shinfo(skb);
++	struct pending_tx_info *tx_info;
+ 	int nr_frags = shinfo->nr_frags;
+ 	int i, err, start;
++	u16 peek; /* peek into next tx request */
+ 
+ 	/* Check status of header. */
+ 	err = gop->status;
+-	if (unlikely(err)) {
+-		pending_ring_idx_t index;
+-		index = pending_index(netbk->pending_prod++);
+-		txp = &pending_tx_info[pending_idx].req;
+-		make_tx_response(vif, txp, XEN_NETIF_RSP_ERROR);
+-		netbk->pending_ring[index] = pending_idx;
+-		xenvif_put(vif);
+-	}
++	if (unlikely(err))
++		xen_netbk_idx_release(netbk, pending_idx, XEN_NETIF_RSP_ERROR);
+ 
+ 	/* Skip first skb fragment if it is on same page as header fragment. */
+ 	start = (frag_get_pending_idx(&shinfo->frags[0]) == pending_idx);
+ 
+ 	for (i = start; i < nr_frags; i++) {
+ 		int j, newerr;
+-		pending_ring_idx_t index;
++		pending_ring_idx_t head;
+ 
+ 		pending_idx = frag_get_pending_idx(&shinfo->frags[i]);
++		tx_info = &netbk->pending_tx_info[pending_idx];
++		head = tx_info->head;
+ 
+ 		/* Check error status: if okay then remember grant handle. */
+-		newerr = (++gop)->status;
++		do {
++			newerr = (++gop)->status;
++			if (newerr)
++				break;
++			peek = netbk->pending_ring[pending_index(++head)];
++		} while (!pending_tx_is_head(netbk, peek));
++
+ 		if (likely(!newerr)) {
+ 			/* Had a previous error? Invalidate this fragment. */
+ 			if (unlikely(err))
+-				xen_netbk_idx_release(netbk, pending_idx);
++				xen_netbk_idx_release(netbk, pending_idx, XEN_NETIF_RSP_OKAY);
+ 			continue;
+ 		}
+ 
+ 		/* Error on this fragment: respond to client with an error. */
+-		txp = &netbk->pending_tx_info[pending_idx].req;
+-		make_tx_response(vif, txp, XEN_NETIF_RSP_ERROR);
+-		index = pending_index(netbk->pending_prod++);
+-		netbk->pending_ring[index] = pending_idx;
+-		xenvif_put(vif);
++		xen_netbk_idx_release(netbk, pending_idx, XEN_NETIF_RSP_ERROR);
+ 
+ 		/* Not the first error? Preceding frags already invalidated. */
+ 		if (err)
+@@ -1318,17 +1495,15 @@
+ 			work_to_do = xen_netbk_get_extras(vif, extras,
+ 							  work_to_do);
+ 			idx = vif->tx.req_cons;
+-			if (unlikely(work_to_do < 0)) {
+-				netbk_tx_err(vif, &txreq, idx);
++			if (unlikely(work_to_do < 0))
+ 				continue;
+-			}
+ 		}
+ 
+-		ret = netbk_count_requests(vif, &txreq, txfrags, work_to_do);
+-		if (unlikely(ret < 0)) {
+-			netbk_tx_err(vif, &txreq, idx - ret);
++		ret = netbk_count_requests(vif, &txreq, idx,
++					   txfrags, work_to_do);
++		if (unlikely(ret < 0))
+ 			continue;
+-		}
++
+ 		idx += ret;
+ 
+ 		if (unlikely(txreq.size < ETH_HLEN)) {
+@@ -1528,11 +1704,15 @@
+ 
+ }
+ 
+-static void xen_netbk_idx_release(struct xen_netbk *netbk, u16 pending_idx)
++static void xen_netbk_idx_release(struct xen_netbk *netbk, u16 pending_idx,
++				  u8 status)
+ {
+ 	struct xenvif *vif;
+ 	struct pending_tx_info *pending_tx_info;
+-	pending_ring_idx_t index;
++	pending_ring_idx_t head;
++	u16 peek; /* peek into next tx request */
++
++	BUG_ON(netbk->mmap_pages[pending_idx] == (void *)(~0UL));
+ 
+ 	/* Already complete? */
+ 	if (netbk->mmap_pages[pending_idx] == NULL)
+@@ -1541,19 +1721,40 @@
+ 	pending_tx_info = &netbk->pending_tx_info[pending_idx];
+ 
+ 	vif = pending_tx_info->vif;
++	head = pending_tx_info->head;
+ 
+-	make_tx_response(vif, &pending_tx_info->req, XEN_NETIF_RSP_OKAY);
++	BUG_ON(!pending_tx_is_head(netbk, head));
++	BUG_ON(netbk->pending_ring[pending_index(head)] != pending_idx);
+ 
+-	index = pending_index(netbk->pending_prod++);
+-	netbk->pending_ring[index] = pending_idx;
++	do {
++		pending_ring_idx_t index;
++		pending_ring_idx_t idx = pending_index(head);
++		u16 info_idx = netbk->pending_ring[idx];
+ 
+-	xenvif_put(vif);
++		pending_tx_info = &netbk->pending_tx_info[info_idx];
++		make_tx_response(vif, &pending_tx_info->req, status);
++
++		/* Setting any number other than
++		 * INVALID_PENDING_RING_IDX indicates this slot is
++		 * starting a new packet / ending a previous packet.
++		 */
++		pending_tx_info->head = 0;
++
++		index = pending_index(netbk->pending_prod++);
++		netbk->pending_ring[index] = netbk->pending_ring[info_idx];
++
++		xenvif_put(vif);
++
++		peek = netbk->pending_ring[pending_index(++head)];
++
++	} while (!pending_tx_is_head(netbk, peek));
+ 
+ 	netbk->mmap_pages[pending_idx]->mapping = 0;
+ 	put_page(netbk->mmap_pages[pending_idx]);
+ 	netbk->mmap_pages[pending_idx] = NULL;
+ }
+ 
++
+ static void make_tx_response(struct xenvif *vif,
+ 			     struct xen_netif_tx_request *txp,
+ 			     s8       st)

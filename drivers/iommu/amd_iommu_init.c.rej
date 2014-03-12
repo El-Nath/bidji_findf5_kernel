@@ -1,0 +1,19 @@
+--- drivers/iommu/amd_iommu_init.c
++++ drivers/iommu/amd_iommu_init.c
+@@ -1672,8 +1702,16 @@
+ 	if (ret)
+ 		goto free;
+ 
++	/* init the device table */
++	init_device_table();
++
++	for_each_iommu(iommu)
++		iommu_flush_all_caches(iommu);
++
+ 	amd_iommu_init_api();
+ 
++	x86_platform.iommu_shutdown = disable_iommus;
++
+ 	if (iommu_pass_through)
+ 		goto out;
+ 
