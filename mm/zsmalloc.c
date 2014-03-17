@@ -2,6 +2,7 @@
  * zsmalloc memory allocator
  *
  * Copyright (C) 2011  Nitin Gupta
+ * Copyright (C) 2012, 2013 Minchan Kim
  *
  * This code is released using a dual license strategy: BSD/GPL
  * You can choose the license that better fits your requirements.
@@ -28,8 +29,9 @@
 #include <linux/cpu.h>
 #include <linux/vmalloc.h>
 
-#include "zsmalloc.h"
-#include "zsmalloc_int.h"
+#include <linux/zsmalloc.h>
+#include <linux/zsmalloc_int.h>
+
 
 /*
  * A zspage's class index and fullness group
