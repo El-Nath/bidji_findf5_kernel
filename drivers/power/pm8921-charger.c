@@ -3219,11 +3219,8 @@ static void __pm8921_charger_vbus_draw(unsigned int mA)
 				case FAST_CHARGE_900:
 					i = 8;
 					break;
-				case FAST_CHARGE_1000:
-					i = 10;
-					break;
 				case FAST_CHARGE_1100:
-					i = 12;
+					i = 10;
 					break;
 				case FAST_CHARGE_1500:
 					i = 14;
