@@ -53,7 +53,6 @@
 
 #ifdef CONFIG_FORCE_FAST_CHARGE
 #include <linux/fastchg.h>
-#define USB_FASTCHG_LOAD 1000 /* uA */
 #endif
 
 #define MSM_USB_BASE	(motg->regs)
@@ -160,6 +159,11 @@ static const int vdd_val[VDD_TYPE_MAX][VDD_VAL_MAX] = {
 			[VDD_MAX]	= USB_PHY_VDD_DIG_VOL_MAX,
 		},
 };
+
+static int otg_hack_active = 0;
+module_param_named(otg_hack_enable,
+			otg_hack_active,
+			int, 0664);
 
 static int msm_hsusb_ldo_init(struct msm_otg *motg, int init)
 {
@@ -1177,6 +1181,8 @@ static int msm_otg_notify_power_supply(struct msm_otg *motg, unsigned mA)
 		return 0;
 	}
 	/* Set max current limit */
+	dev_info(motg->phy.dev, "current: %d -> %d (mA)\n",
+			motg->cur_power, mA);
 	if (power_supply_set_current_limit(psy, 1000*mA))
 		goto psy_not_supported;
 
@@ -1194,13 +1200,16 @@ static void msm_otg_notify_charger(struct msm_otg *motg, unsigned mA)
 	if (g && g->is_a_peripheral)
 		return;
 
-	if ((motg->chg_type == USB_ACA_DOCK_CHARGER ||
-		motg->chg_type == USB_ACA_A_CHARGER ||
-		motg->chg_type == USB_ACA_B_CHARGER ||
-		motg->chg_type == USB_ACA_C_CHARGER) &&
-			mA > IDEV_ACA_CHG_LIMIT)
-		mA = IDEV_ACA_CHG_LIMIT;
-
+	// remove charge limit (500mA) in host mode -ziddey
+	if (!otg_hack_active) {
+		if ((motg->chg_type == USB_ACA_DOCK_CHARGER ||
+			motg->chg_type == USB_ACA_A_CHARGER ||
+			motg->chg_type == USB_ACA_B_CHARGER ||
+			motg->chg_type == USB_ACA_C_CHARGER) &&
+				mA > IDEV_ACA_CHG_LIMIT)
+			mA = IDEV_ACA_CHG_LIMIT;
+	}
+	
 /* OPPO 2013-05-17 wangjc Add begin for reason */
 	if(motg->chg_type == USB_SDP_CHARGER)
 		mA = IDEV_CHG_MIN;
@@ -1211,16 +1220,14 @@ static void msm_otg_notify_charger(struct msm_otg *motg, unsigned mA)
 			"Failed notifying %d charger type to PMIC\n",
 							motg->chg_type);
 
+#ifdef CONFIG_FORCE_FAST_CHARGE
+	if (force_fast_charge > 0)
+		mA = IDEV_ACA_CHG_MAX;
+#endif
+
 	if (motg->cur_power == mA)
 		return;
-#ifdef CONFIG_FORCE_FAST_CHARGE
-	if (force_fast_charge == 1) {
-			mA = USB_FASTCHG_LOAD;
-			pr_info("USB fast charging is ON - 1000mA.\n");
-	} else {
-		pr_info("USB fast charging is OFF.\n");
-	}
-#endif
+
 	dev_info(motg->phy.dev, "Avail curr from USB = %u\n", mA);
 
 	/*
@@ -2256,8 +2263,17 @@ static void msm_chg_detect_work(struct work_struct *w)
 				break;
 			}
 
-			if (line_state) /* DP > VLGC or/and DM > VLGC */
-				motg->chg_type = USB_PROPRIETARY_CHARGER;
+			if (line_state) /* DP > VLGC or/and DM > VLGC */ {
+				if (otg_hack_active) {
+					// simulate ID_A to force host mode
+					// with charging -ziddey
+					pr_info("*** FORCING USB HOST MODE W/ CHARGING ***\n");
+					set_bit(ID_A, &motg->inputs);
+					motg->chg_type = USB_ACA_A_CHARGER;
+				} else
+					motg->chg_type =
+						USB_PROPRIETARY_CHARGER;
+			}
 			else
 				motg->chg_type = USB_SDP_CHARGER;
 
@@ -2761,7 +2777,13 @@ static void msm_otg_sm_work(struct work_struct *w)
 			usleep_range(10000, 12000);
 			/* ACA: ID_A: Stop charging untill enumeration */
 			if (test_bit(ID_A, &motg->inputs))
-				msm_otg_notify_charger(motg, 0);
+				// start charging (compatibility with
+				// proprietary chargers) -ziddey
+				if (otg_hack_active)
+					msm_otg_notify_charger(motg,
+						IDEV_ACA_CHG_MAX);
+				else
+					msm_otg_notify_charger(motg, 0);
 			else
 				msm_hsusb_vbus_power(motg, 1);
 			msm_otg_start_timer(motg, TA_WAIT_VRISE, A_WAIT_VRISE);
@@ -3199,9 +3221,11 @@ static void msm_otg_set_vbus_state(int online)
 	struct msm_otg *motg = the_msm_otg;
 	struct usb_otg *otg = motg->phy.otg;
 
+	// need BSV interrupt in A Host Mode to detect cable unplug -ziddey
 	/* In A Host Mode, ignore received BSV interrupts */
-	if (otg->phy->state >= OTG_STATE_A_IDLE)
-		return;
+	if (!otg_hack_active)
+		if (otg->phy->state >= OTG_STATE_A_IDLE)
+			return;
 
 	if (online) {
 		pr_debug("PMIC: BSV set\n");
@@ -3209,6 +3233,15 @@ static void msm_otg_set_vbus_state(int online)
 	} else {
 		pr_debug("PMIC: BSV clear\n");
 		clear_bit(B_SESS_VLD, &motg->inputs);
+
+		// disable host mode (if enabled) -ziddey
+		if (otg_hack_active) {
+			if (test_and_clear_bit(ID_A, &motg->inputs)) {
+				pr_info("*** UNFORCING USB HOST MODE ***\n");
+				motg->chg_state = USB_CHG_STATE_UNDEFINED;
+				motg->chg_type = USB_INVALID_CHARGER;
+			}
+		}
 	}
 
 	if (!init) {
