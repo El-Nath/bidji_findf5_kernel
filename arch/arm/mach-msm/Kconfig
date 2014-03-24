@@ -487,6 +487,13 @@ config VENDOR_EDIT
 	bool "VENDOR_EDIT"
 	default y
 #OPPO 2013-02-19 zhenwxAdd end 
+
+config OPPO_FIND5
+	bool "Oppo Find5"
+
+config OPPO_N1
+	bool "Oppo N1"
+
 config MACH_HALIBUT
 	depends on ARCH_MSM7X01A
 	depends on MSM_STACKED_MEMORY
@@ -2676,6 +2683,14 @@ config MODEM_ERR_ENTER_RAMDUMP
 # add by zhenwx end 
 
 # add by chendx start
+
+#Wangjc@OnlineRd.Driver, 2013/10/23, Add for kernel OPPO_DEVICE_IFNO macro
+config OPPO_DEVICE_IFNO
+	bool "config oppo device info"
+	default n
+	help 
+	  This is the oppo device info show function, open it will enable the function.
+
 config CONFIG_OPPO_DEBUG_ASSERT
 	bool "CONFIG_OPPO_DEBUG_ASSERT"
     default y
